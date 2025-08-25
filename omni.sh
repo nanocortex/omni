@@ -67,6 +67,7 @@ ask_install() {
     program="$1"
     purpose="$2"
     install_func="$3"
+    alternative_program_name="${4:-$program}"
     
     echo "$program is not installed. Would you like to install it $purpose? (y/n)"
     read -r response
@@ -95,7 +96,7 @@ ask_install() {
                 esac
             fi
             
-            if is_installed "$program"; then
+            if is_installed "$program" || is_installed "$alternative_program_name"; then
                 echo "$program installed successfully!"
                 return 0
             else
@@ -1972,7 +1973,7 @@ check_dependencies() {
     fi
     
     if ! is_installed bat && ! is_installed batcat; then
-        if ! ask_install "bat" "as it is required for enhanced syntax-highlighted previews" "install_bat"; then
+        if ! ask_install "bat" "as it is required for enhanced syntax-highlighted previews" "install_bat" "batcat"; then
             echo "bat is required for this tool to function properly. Exiting."
             exit 1
         fi
