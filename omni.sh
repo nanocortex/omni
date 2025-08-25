@@ -18,21 +18,47 @@ is_installed() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Get the correct bat command (bat or batcat)
+get_bat_cmd() {
+    if command -v bat >/dev/null 2>&1; then
+        echo "bat"
+    elif command -v batcat >/dev/null 2>&1; then
+        echo "batcat"
+    else
+        echo ""
+    fi
+}
+
+is_bash_running_as_sh() {
+  [ -n "$BASH_VERSION" ] && [ "$(ps -p $$ -o comm=)" = "sh" ]
+}
+
 # Determine if the script is being sourced or executed directly
 is_sourced() {
   sourced=0
   if [ -n "$ZSH_VERSION" ]; then 
-    case $ZSH_EVAL_CONTEXT in *:file) sourced=1;; esac
+    case $ZSH_EVAL_CONTEXT in *:file*) sourced=1;; esac
+    # Alternative zsh check
+    [[ $0 != "$ZSH_ARGZERO" ]] && sourced=1
   elif [ -n "$KSH_VERSION" ]; then
     [ "$(cd -- "$(dirname -- "$0")" && pwd -P)/$(basename -- "$0")" != "$(cd -- "$(dirname -- "${.sh.file}")" && pwd -P)/$(basename -- "${.sh.file}")" ] && sourced=1
+  elif is_bash_running_as_sh; then
+    # Treat as POSIX sh
+    case ${0##*/} in sh|-sh|dash|-dash) sourced=1;; esac
   elif [ -n "$BASH_VERSION" ]; then
-    (return 0 2>/dev/null) && sourced=1 
-  else # All other shells: examine $0 for known shell binary filenames.
-    # Detects `sh` and `dash`; add additional shell filenames as needed.
+    # Real bash
+    if [[ $0 != "$BASH_SOURCE" ]] || (return 0 2>/dev/null); then
+        sourced=1
+    fi 
+  else
     case ${0##*/} in sh|-sh|dash|-dash) sourced=1;; esac
   fi
 
-  return $sourced
+  # echo "DEBUG: \$0=$0, BASH_SOURCE=$BASH_SOURCE, BASH_VERSION=$BASH_VERSION, ZSH_VERSION=$ZSH_VERSION"
+  # echo "DEBUG: ZSH_EVAL_CONTEXT=$ZSH_EVAL_CONTEXT, ZSH_ARGZERO=$ZSH_ARGZERO"
+  # echo "DEBUG: is_bash_running_as_sh=$(is_bash_running_as_sh && echo yes || echo no)"
+  # echo "Sourced: $sourced"
+  [ $sourced -eq 1 ]
 }
 
 
@@ -308,6 +334,10 @@ fallback_bat_github() {
     curl -sL https://github.com/sharkdp/bat/releases/latest/download/bat_*_amd64.deb -o bat.deb
     sudo dpkg -i bat.deb
     rm bat.deb
+    # Create symlink if bat was installed as batcat
+    if [ ! -L /usr/local/bin/bat ] && [ -f /usr/bin/batcat ]; then
+        sudo ln -s /usr/bin/batcat /usr/local/bin/bat
+    fi
 }
 
 fallback_docker_script() {
@@ -449,7 +479,7 @@ clean_trash() {
 
 update_linux_system() {
     if is_installed apt; then
-        sudo apt update && sudo apt upgrade -y
+        sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y
     elif is_installed yum; then
         sudo yum update -y
     elif is_installed dnf; then
@@ -536,6 +566,7 @@ install_aerc() {
 install_bat() {
     # PROGRAM: Bat
     install_program "bat" "bat" "bat" "formula" "fallback_bat_apt" "fallback_bat_github"
+  
 }
 
 install_neovim() {
@@ -713,7 +744,7 @@ show_network_interfaces() {
                     --height=80% \
                     --reverse \
                     --header="Network Interfaces" \
-                    --preview "source \"$script_path\" && preview_network_interface {} | bat --language=yaml --style=numbers,grid --color=always" \
+                    --preview "source \"$script_path\" && preview_network_interface {} | \$(get_bat_cmd) --language=yaml --style=numbers,grid --color=always" \
                     --preview-window=right:60%:wrap || true
             else
                 echo "No network interfaces found"
@@ -733,7 +764,7 @@ show_network_interfaces() {
                     --height=80% \
                     --reverse \
                     --header="Network Interfaces" \
-                    --preview "source \"$script_path\" && preview_network_interface {} | bat --language=yaml --style=numbers,grid --color=always" \
+                    --preview "source \"$script_path\" && preview_network_interface {} | \$(get_bat_cmd) --language=yaml --style=numbers,grid --color=always" \
                     --preview-window=right:60%:wrap || true
             else
                 echo "No network interfaces found"
@@ -822,7 +853,7 @@ show_open_ports() {
                             --height=80% \
                             --reverse \
                             --header="Process:PID    Port    Command" \
-                            --preview "source \"$script_path\" && preview_open_port {} | bat --language=yaml --style=numbers --color=always" \
+                            --preview "source \"$script_path\" && preview_open_port {} | \$(get_bat_cmd) --language=yaml --style=numbers --color=always" \
                             --preview-window=right:60%:wrap || true
                     else
                         echo "No listening ports found"
@@ -861,7 +892,7 @@ show_open_ports() {
                             --height=80% \
                             --reverse \
                             --header="Port    PID    Address" \
-                            --preview "source \"$script_path\" && preview_open_port {} | bat --language=yaml --style=numbers --color=always" \
+                            --preview "source \"$script_path\" && preview_open_port {} | \$(get_bat_cmd) --language=yaml --style=numbers --color=always" \
                             --preview-window=right:60%:wrap || true
                     else
                         echo "No listening ports found"
@@ -917,6 +948,111 @@ show_system_info() {
     fi
 }
 
+check_security() {
+    # MENU: Check Security
+    printf "${CYAN}Security Information${NC}\n"
+    printf "${CYAN}===================${NC}\n\n"
+    
+    case "$(uname)" in
+        Darwin)
+            printf "${BLUE}Recent Login Activity:${NC}\n"
+            printf "${BLUE}=====================${NC}\n"
+            
+            # Show last 20 logins in a pretty format
+            last -20 | grep -v "^$" | while IFS= read -r line; do
+                if echo "$line" | grep -q "^wtmp begins"; then
+                    printf "${YELLOW}%s${NC}\n" "$line"
+                elif echo "$line" | grep -q "reboot"; then
+                    user=$(echo "$line" | awk '{print $1}')
+                    date_info=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
+                    printf "${PURPLE}%-12s${NC} ${GREEN}%s${NC}\n" "$user" "$date_info"
+                else
+                    user=$(echo "$line" | awk '{print $1}')
+                    tty=$(echo "$line" | awk '{print $2}')
+                    date_info=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
+                    if [ "$user" != "" ] && [ "$tty" != "" ]; then
+                        printf "${CYAN}%-12s${NC} ${YELLOW}%-10s${NC} ${GREEN}%s${NC}\n" "$user" "$tty" "$date_info"
+                    fi
+                fi
+            done
+            
+            printf "\n${BLUE}Current Login Sessions:${NC}\n"
+            printf "${BLUE}=======================${NC}\n"
+            who | while IFS= read -r line; do
+                user=$(echo "$line" | awk '{print $1}')
+                tty=$(echo "$line" | awk '{print $2}')
+                date_info=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
+                printf "${CYAN}%-12s${NC} ${YELLOW}%-10s${NC} ${GREEN}%s${NC}\n" "$user" "$tty" "$date_info"
+            done
+            ;;
+        Linux)
+            printf "${BLUE}Recent Login Activity:${NC}\n"
+            printf "${BLUE}=====================${NC}\n"
+            
+            # Show last 20 logins in a pretty format
+            last -20 | grep -v "^$" | while IFS= read -r line; do
+                if echo "$line" | grep -q "^wtmp begins"; then
+                    printf "${YELLOW}%s${NC}\n" "$line"
+                elif echo "$line" | grep -q "reboot"; then
+                    user=$(echo "$line" | awk '{print $1}')
+                    date_info=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
+                    printf "${PURPLE}%-12s${NC} ${GREEN}%s${NC}\n" "$user" "$date_info"
+                else
+                    user=$(echo "$line" | awk '{print $1}')
+                    tty=$(echo "$line" | awk '{print $2}')
+                    date_info=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
+                    if [ "$user" != "" ] && [ "$tty" != "" ]; then
+                        printf "${CYAN}%-12s${NC} ${YELLOW}%-10s${NC} ${GREEN}%s${NC}\n" "$user" "$tty" "$date_info"
+                    fi
+                fi
+            done
+            
+            printf "\n${BLUE}Current Login Sessions:${NC}\n"
+            printf "${BLUE}=======================${NC}\n"
+            who | while IFS= read -r line; do
+                user=$(echo "$line" | awk '{print $1}')
+                tty=$(echo "$line" | awk '{print $2}')  
+                date_info=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
+                printf "${CYAN}%-12s${NC} ${YELLOW}%-10s${NC} ${GREEN}%s${NC}\n" "$user" "$tty" "$date_info"
+            done
+            
+            # Show failed login attempts if available
+            if [ -f /var/log/auth.log ] && [ -r /var/log/auth.log ]; then
+                printf "\n${BLUE}Recent Failed Login Attempts:${NC}\n"
+                printf "${BLUE}=============================${NC}\n"
+                grep "Failed password" /var/log/auth.log | tail -10 | while IFS= read -r line; do
+                    date_part=$(echo "$line" | awk '{print $1, $2, $3}')
+                    user_part=$(echo "$line" | grep -o "invalid user [^[:space:]]*" | awk '{print $3}')
+                    ip_part=$(echo "$line" | grep -o "from [0-9.]*" | awk '{print $2}')
+                    if [ -z "$user_part" ]; then
+                        user_part=$(echo "$line" | grep -o "for [^[:space:]]*" | awk '{print $2}')
+                    fi
+                    printf "${RED}%-15s${NC} ${YELLOW}%-12s${NC} ${CYAN}from %s${NC}\n" "$date_part" "$user_part" "$ip_part"
+                done
+            elif [ -f /var/log/secure ] && [ -r /var/log/secure ]; then
+                printf "\n${BLUE}Recent Failed Login Attempts:${NC}\n"
+                printf "${BLUE}=============================${NC}\n"
+                grep "Failed password" /var/log/secure | tail -10 | while IFS= read -r line; do
+                    date_part=$(echo "$line" | awk '{print $1, $2, $3}')
+                    user_part=$(echo "$line" | grep -o "invalid user [^[:space:]]*" | awk '{print $3}')
+                    ip_part=$(echo "$line" | grep -o "from [0-9.]*" | awk '{print $2}')
+                    if [ -z "$user_part" ]; then
+                        user_part=$(echo "$line" | grep -o "for [^[:space:]]*" | awk '{print $2}')
+                    fi
+                    printf "${RED}%-15s${NC} ${YELLOW}%-12s${NC} ${CYAN}from %s${NC}\n" "$date_part" "$user_part" "$ip_part"
+                done
+            fi
+            ;;
+    esac
+    
+    printf "\n${BLUE}System Security Information:${NC}\n"
+    printf "${BLUE}============================${NC}\n"
+    printf "${CYAN}%-20s${NC} %s\n" "Current User:" "$(whoami)"
+    printf "${CYAN}%-20s${NC} %s\n" "User ID:" "$(id -u)"
+    printf "${CYAN}%-20s${NC} %s\n" "Group ID:" "$(id -g)"
+    printf "${CYAN}%-20s${NC} %s\n" "User Groups:" "$(id -Gn | tr ' ' ',')"
+}
+
 preview_installed_font() {
     font_family="$1"
     
@@ -941,7 +1077,7 @@ show_installed_fonts() {
             --prompt="Browse fonts (ESC to exit): " \
             --height=80% \
             --reverse \
-            --preview "source \"$script_path\" && preview_installed_font {} | bat --language=yaml --style=numbers --color=always" \
+            --preview "source \"$script_path\" && preview_installed_font {} | \$(get_bat_cmd) --language=yaml --style=numbers --color=always" \
             --preview-window=right:60%:wrap \
             --header="Font families installed on your system" || true
     else
@@ -1122,7 +1258,7 @@ $system_apps"
                     --prompt="Browse programs (ESC to exit): " \
                     --height=80% \
                     --reverse \
-                    --preview "source \"$script_path\" && preview_installed_program {} | bat --language=yaml --style=numbers --color=always" \
+                    --preview "source \"$script_path\" && preview_installed_program {} | \$(get_bat_cmd) --language=yaml --style=numbers --color=always" \
                     --preview-window=right:60%:wrap \
                     --header="Installed programs on your macOS system" || true
             ;;
@@ -1150,7 +1286,7 @@ $system_apps"
                     --prompt="Browse packages (ESC to exit): " \
                     --height=80% \
                     --reverse \
-                    --preview "source \"$script_path\" && preview_installed_program {} | bat --language=yaml --style=numbers --color=always" \
+                    --preview "source \"$script_path\" && preview_installed_program {} | \$(get_bat_cmd) --language=yaml --style=numbers --color=always" \
                     --preview-window=right:60%:wrap \
                     --header="Installed packages on your Linux system" || true
             ;;
@@ -1289,7 +1425,7 @@ check_dns() {
     case "$(uname)" in
         Darwin)
             printf "${BLUE}Current DNS servers:${NC}\n"
-            scutil --dns | grep 'nameserver\[[0-9]*\]' | head -10
+            scutil --dns | grep 'nameserver\[[0-9]*\]' | awk '{print $3}' | sort | uniq
             
             printf "\n"
             printf "${BLUE}Network service DNS settings:${NC}\n"
@@ -1299,7 +1435,7 @@ check_dns() {
         Linux)
             printf "${BLUE}Current DNS servers:${NC}\n"
             if [ -f /etc/resolv.conf ]; then
-                grep "^nameserver" /etc/resolv.conf
+                grep "^nameserver" /etc/resolv.conf | awk '{print $2}' | sort | uniq
             fi
             
             if command -v systemd-resolve >/dev/null 2>&1; then
@@ -1334,7 +1470,11 @@ check_dns() {
     printf "${CYAN}===================${NC}\n"
     for domain in $test_domains; do
         printf "${YELLOW}%s${NC}: " "$domain"
-        time_result=$( { time nslookup "$domain" >/dev/null 2>&1; } 2>&1 | grep real | awk '{print $2}' || echo "timeout")
+        if nslookup "$domain" >/dev/null 2>&1; then
+            time_result="success"
+        else
+            time_result="timeout"
+        fi
         if [ "$time_result" = "timeout" ]; then
             printf "${RED}%s${NC}\n" "$time_result"
         else
@@ -1410,7 +1550,7 @@ install_programs_menu() {
         --prompt="Select a program to install (ESC to return): " \
         --height=80% \
         --reverse \
-        --preview "source \"$script_path\" && SCRIPT_PATH=\"$script_path\" preview_install_program {} | bat --language=bash --style=numbers --color=always" \
+        --preview "source \"$script_path\" && SCRIPT_PATH=\"$script_path\" preview_install_program {} | \$(get_bat_cmd) --language=bash --style=numbers --color=always" \
         --preview-window=right:50%:wrap) || choice=""
     
     case "$choice" in
@@ -1542,7 +1682,7 @@ EOF
         --height=80% \
         --reverse \
         --ansi \
-        --preview "source \"$script_path\" && preview_nerd_font \$(echo {} | sed 's/ \\033\[32m\\[INSTALLED\\]\\033\[0m//') | bat --language=yaml --style=numbers --color=always" \
+        --preview "source \"$script_path\" && preview_nerd_font \$(echo {} | sed 's/ \\033\[32m\\[INSTALLED\\]\\033\[0m//') | \$(get_bat_cmd) --language=yaml --style=numbers --color=always" \
         --preview-window=right:50%:wrap) || return 0
     
     if [ -n "$choice" ]; then
@@ -1574,6 +1714,138 @@ EOF
             return 1
         fi
     fi
+}
+
+# Generic uninstall function
+uninstall_program() {
+    program_name="$1"
+    
+    if [ -z "$program_name" ]; then
+        echo "Error: Program name is required"
+        return 1
+    fi
+    
+    echo "Attempting to uninstall: $program_name"
+    
+    case "$(uname)" in
+        Darwin)
+            # Try Homebrew first
+            if command -v brew >/dev/null 2>&1; then
+                if brew list | grep -q "^$program_name$"; then
+                    echo "Uninstalling $program_name via Homebrew..."
+                    brew uninstall "$program_name"
+                    return $?
+                elif brew list --cask | grep -q "^$program_name$"; then
+                    echo "Uninstalling $program_name cask via Homebrew..."
+                    brew uninstall --cask "$program_name"
+                    return $?
+                else
+                    echo "$program_name not found in Homebrew"
+                fi
+            fi
+            ;;
+        Linux)
+            # Try different package managers
+            if command -v apt >/dev/null 2>&1; then
+                if dpkg -l | grep -q "^ii.*$program_name"; then
+                    echo "Uninstalling $program_name via apt..."
+                    sudo apt remove -y "$program_name"
+                    return $?
+                fi
+            elif command -v yum >/dev/null 2>&1; then
+                if yum list installed | grep -q "$program_name"; then
+                    echo "Uninstalling $program_name via yum..."
+                    sudo yum remove -y "$program_name"
+                    return $?
+                fi
+            elif command -v dnf >/dev/null 2>&1; then
+                if dnf list installed | grep -q "$program_name"; then
+                    echo "Uninstalling $program_name via dnf..."
+                    sudo dnf remove -y "$program_name"
+                    return $?
+                fi
+            elif command -v pacman >/dev/null 2>&1; then
+                if pacman -Q "$program_name" >/dev/null 2>&1; then
+                    echo "Uninstalling $program_name via pacman..."
+                    sudo pacman -R "$program_name"
+                    return $?
+                fi
+            fi
+            ;;
+    esac
+    
+    echo "Could not uninstall $program_name - not found or unsupported package manager"
+    return 1
+}
+
+uninstall_programs_menu() {
+    # MENU: Uninstall Programs
+    echo "Gathering installed programs..."
+    
+    case "$(uname)" in
+        Darwin)
+            if command -v brew >/dev/null 2>&1; then
+                programs=$(brew list)
+                casks=$(brew list --cask)
+                all_programs=$(printf "%s\n%s" "$programs" "$casks" | sort | uniq)
+            else
+                echo "Homebrew not found. Cannot list installed programs."
+                return 1
+            fi
+            ;;
+        Linux)
+            if command -v apt >/dev/null 2>&1; then
+                all_programs=$(dpkg -l | grep '^ii' | awk '{print $2}' | sort)
+            elif command -v yum >/dev/null 2>&1; then
+                all_programs=$(yum list installed | awk 'NR>1 {print $1}' | cut -d'.' -f1 | sort)
+            elif command -v dnf >/dev/null 2>&1; then
+                all_programs=$(dnf list installed | awk 'NR>1 {print $1}' | cut -d'.' -f1 | sort)
+            elif command -v pacman >/dev/null 2>&1; then
+                all_programs=$(pacman -Q | awk '{print $1}' | sort)
+            else
+                echo "No supported package manager found."
+                return 1
+            fi
+            ;;
+        *)
+            echo "Unsupported operating system"
+            return 1
+            ;;
+    esac
+    
+    if [ -z "$all_programs" ]; then
+        echo "No programs found or error gathering program list."
+        return 1
+    fi
+    
+    choice=$(echo "$all_programs" | fzf \
+        --prompt="Select a program to uninstall (ESC to return): " \
+        --height=80% \
+        --reverse \
+        --preview "echo 'Program: {}'; echo; echo 'This will uninstall the selected program from your system.'" \
+        --preview-window=right:50%:wrap) || choice=""
+    
+    case "$choice" in
+        "")
+            return 0
+            ;;
+        *)
+            echo
+            printf "Are you sure you want to uninstall '%s'? (y/N): " "$choice"
+            read -r confirm
+            case "$confirm" in
+                [Yy]|[Yy][Ee][Ss])
+                    uninstall_program "$choice"
+                    echo
+                    printf "Press Enter to continue..."
+                    read -r dummy
+                    ;;
+                *)
+                    echo "Uninstall cancelled."
+                    ;;
+            esac
+            ;;
+    esac
 }
 
 preview_menu_item() {
@@ -1644,7 +1916,7 @@ Exit"
         choice=$(echo "$functions" | fzf \
             --prompt="Select a function: " \
             --reverse \
-            --preview "source \"$script_path\" && SCRIPT_PATH=\"$script_path\" preview_menu_item {} | bat --language=bash --style=numbers --color=always" \
+            --preview "source \"$script_path\" && SCRIPT_PATH=\"$script_path\" preview_menu_item {} | \$(get_bat_cmd) --language=bash --style=numbers --color=always" \
             --preview-window=right:50%:wrap)
         
         case "$choice" in
@@ -1663,14 +1935,14 @@ Exit"
                     
                     # Don't prompt for "Press Enter" for viewing functions that use fzf
                     case "$func_name" in
-                        show_installed_programs|show_installed_fonts|show_network_interfaces|show_open_ports|font_menu|install_programs_menu)
+                        show_installed_programs|show_installed_fonts|show_network_interfaces|show_open_ports|font_menu|install_programs_menu|uninstall_programs_menu)
                             # These functions handle their own interaction, don't prompt
                             ;;
                         *)
                             # Regular functions that perform actions need confirmation
                             echo
                             printf "Press Enter to continue or Ctrl+C to exit..."
-                            read -r
+                            read -r dummy
                             ;;
                     esac
                 else
@@ -1699,7 +1971,7 @@ check_dependencies() {
         echo
     fi
     
-    if ! is_installed bat; then
+    if ! is_installed bat && ! is_installed batcat; then
         if ! ask_install "bat" "as it is required for enhanced syntax-highlighted previews" "install_bat"; then
             echo "bat is required for this tool to function properly. Exiting."
             exit 1
