@@ -1334,7 +1334,7 @@ check_dns() {
     printf "${CYAN}===================${NC}\n"
     for domain in $test_domains; do
         printf "${YELLOW}%s${NC}: " "$domain"
-        time_result=$(time (nslookup "$domain" >/dev/null 2>&1) 2>&1 | grep real | awk '{print $2}' || echo "timeout")
+        time_result=$( { time nslookup "$domain" >/dev/null 2>&1; } 2>&1 | grep real | awk '{print $2}' || echo "timeout")
         if [ "$time_result" = "timeout" ]; then
             printf "${RED}%s${NC}\n" "$time_result"
         else
